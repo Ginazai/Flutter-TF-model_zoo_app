@@ -22,7 +22,20 @@ class TextRecognitionScreen extends StatelessWidget {
                   color: Colors.black,
                   child: Center(
                     child: ocrProvider.isProcessing
-                        ? CircularProgressIndicator(color: Colors.white)
+                        ? Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        CircularProgressIndicator(color: Colors.white),
+                        SizedBox(height: 16),
+                        Text(
+                          'Procesando imagen...',
+                          style: TextStyle(
+                            color: Colors.white70,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ],
+                    )
                         : Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
@@ -45,6 +58,28 @@ class TextRecognitionScreen extends StatelessWidget {
                 ),
               ),
 
+              // Error message
+              if (ocrProvider.errorMessage != null)
+                Container(
+                  padding: EdgeInsets.all(12),
+                  color: Colors.red[100],
+                  child: Row(
+                    children: [
+                      Icon(Icons.error_outline, color: Colors.red),
+                      SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          ocrProvider.errorMessage!,
+                          style: TextStyle(
+                            color: Colors.red[800],
+                            fontSize: 14,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
               // Results
               if (ocrProvider.lastResult != null)
                 Container(
@@ -55,21 +90,41 @@ class TextRecognitionScreen extends StatelessWidget {
                     children: [
                       Row(
                         children: [
-                          Icon(Icons.volume_up, color: Colors.purple),
+                          Icon(Icons.check_circle, color: Colors.green),
                           SizedBox(width: 8),
                           Text(
-                            'Resultado:',
+                            'Texto Reconocido:',
                             style: TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.bold,
+                              color: Colors.green[700],
                             ),
                           ),
                         ],
                       ),
+                      SizedBox(height: 12),
+                      Container(
+                        padding: EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.grey[300]!),
+                        ),
+                        child: Text(
+                          ocrProvider.lastResult!.rawText,
+                          style: TextStyle(
+                            fontSize: 16,
+                            height: 1.5,
+                          ),
+                        ),
+                      ),
                       SizedBox(height: 8),
                       Text(
-                        ocrProvider.lastResult?.correctedText ?? '',
-                        style: TextStyle(fontSize: 16),
+                        'Confianza: ${(ocrProvider.lastResult!.confidence * 100).toStringAsFixed(1)}%',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey[600],
+                        ),
                       ),
                     ],
                   ),
@@ -83,17 +138,37 @@ class TextRecognitionScreen extends StatelessWidget {
                     backgroundColor: Colors.purple,
                     minimumSize: Size(double.infinity, 56),
                   ),
-                  onPressed: () async {
-                    final imageBytes = await connectionProvider.esp32Service.captureImage();
-                    if (imageBytes != null) {
-                      await ocrProvider.processImage(imageBytes);
-                    } else {
-                      print('No se pudo capturar la imagen');
-                      // Show error to user
+                  onPressed: ocrProvider.isProcessing
+                      ? null
+                      : () async {
+                    try {
+                      final imageBytes =
+                      await connectionProvider.esp32Service
+                          .captureImage();
+                      if (imageBytes != null) {
+                        await ocrProvider.processImage(imageBytes);
+                      } else {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content:
+                            Text('No se pudo capturar la imagen'),
+                            backgroundColor: Colors.red,
+                          ),
+                        );
+                      }
+                    } catch (e) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Error: $e'),
+                          backgroundColor: Colors.red,
+                        ),
+                      );
                     }
                   },
                   child: Text(
-                    'Capturar y Analizar',
+                    ocrProvider.isProcessing
+                        ? 'Analizando...'
+                        : 'Capturar y Analizar',
                     style: TextStyle(
                       fontSize: 18,
                       color: Colors.white,

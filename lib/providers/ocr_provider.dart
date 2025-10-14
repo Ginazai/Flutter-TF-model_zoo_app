@@ -1,56 +1,64 @@
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import '../services/ocr_service.dart';
-import '../services/text_correction_service.dart';
 import '../services/tts_service.dart';
 import '../models/ocr_result.dart';
 
 class OCRProvider with ChangeNotifier {
   final OCRService _ocrService = OCRService();
-  final TextCorrectionService _correctionService = TextCorrectionService();
   final TtsService _ttsService = TtsService();
 
   bool _isProcessing = false;
   OCRResult? _lastResult;
+  String? _errorMessage;
 
   // GETTERS
   bool get isProcessing => _isProcessing;
   OCRResult? get lastResult => _lastResult;
+  String? get errorMessage => _errorMessage;
 
-  // INICIALIZAR
+  // INITIALIZE
   Future<void> initialize() async {
-    await _correctionService.initialize();
-    await _ocrService.initialize();
+    try {
+      final success = await _ocrService.initialize();
+      if (!success) {
+        _errorMessage = 'Failed to initialize OCR service';
+        notifyListeners();
+      }
+    } catch (e) {
+      _errorMessage = 'Error during initialization: $e';
+      notifyListeners();
+    }
   }
 
-  // PROCESAR IMAGEN
+  // PROCESS IMAGE
   Future<void> processImage(Uint8List imageBytes) async {
     _isProcessing = true;
     _lastResult = null;
+    _errorMessage = null;
     notifyListeners();
 
     try {
-      // 1. OCR
+      // Perform OCR
       String rawText = await _ocrService.recognizeText(imageBytes);
 
-      // 2. Corrección con BERT
-      String correctedText = await _correctionService.correctText(rawText);
-
-      // 3. Crear resultado
-      _lastResult = OCRResult(
-        rawText: rawText,
-        correctedText: correctedText,
-        confidence: rawText.isNotEmpty ? 0.8 : 0.0,
-      );
-
-      // 4. Leer en voz alta
-      if (_lastResult!.isValid) {
-        await _ttsService.speak(_lastResult!.correctedText);
-      } else {
+      if (rawText.isEmpty) {
+        _errorMessage = 'No text detected in image';
         await _ttsService.speak('No se detectó texto');
+      } else {
+        // Create result with ML Kit confidence (default to high confidence if text found)
+        _lastResult = OCRResult(
+          rawText: rawText,
+          confidence: 0.9, // ML Kit doesn't expose element-level confidence directly
+        );
+
+        // Speak the recognized text
+        await _ttsService.speak(_lastResult!.rawText);
       }
     } catch (e) {
+      _errorMessage = 'Error processing OCR: $e';
       print('Error procesando OCR: $e');
+      await _ttsService.speak('Error al procesar la imagen');
     } finally {
       _isProcessing = false;
       notifyListeners();
@@ -60,7 +68,6 @@ class OCRProvider with ChangeNotifier {
   @override
   void dispose() {
     _ocrService.dispose();
-    _correctionService.dispose();
     super.dispose();
   }
 }

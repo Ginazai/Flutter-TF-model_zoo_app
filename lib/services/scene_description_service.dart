@@ -2,12 +2,10 @@ import 'dart:typed_data';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:image/image.dart' as img;
 import '../models/scene_description.dart';
-import 'text_correction_service.dart';
 
 class SceneDetectionService {
   Interpreter? _interpreter;
   bool _isInitialized = false;
-  final TextCorrectionService _bertService = TextCorrectionService();
 
   // MobileNet típicamente usa estas clases (Places365 o ImageNet)
   static const List<String> SCENE_LABELS = [
@@ -34,11 +32,8 @@ class SceneDetectionService {
         'assets/models/scene/DeepLabV3-Plus-MobileNet_float.tflite',
       );
 
-      // Initialize BERT for text enhancement
-      await _bertService.initialize();
-
       _isInitialized = true;
-      print('✅ MobileNet + BERT inicializados');
+      print('MobileNet inicializado');
 
       // Print model info
       print('Input shape: ${_interpreter!.getInputTensor(0).shape}');
@@ -87,7 +82,7 @@ class SceneDetectionService {
       var result = _processSegmentationOutput(output);
 
       // 5. Enhance with BERT to create natural description
-      String naturalDescription = await _enhanceWithBERT(
+      String naturalDescription = _createFallbackDescription(
         result['label'] as String,
         result['confidence'] as double,
       );
@@ -210,57 +205,36 @@ class SceneDetectionService {
     return VOC_CLASSES[classId] ?? 'unknown_object';
   }
 
-  Future<String> _enhanceWithBERT(String sceneLabel, double confidence) async {
-    try {
-      // Create a natural prompt for BERT
-      String rawDescription = 'detected scene: ${sceneLabel.replaceAll('_', ' ')} '
-          'with confidence ${(confidence * 100).toStringAsFixed(0)}%';
-
-      // Use BERT to generate natural language description
-      String enhanced = await _bertService.processSceneDescription(rawDescription);
-
-      // If BERT fails or returns empty, create a fallback description
-      if (enhanced.isEmpty || enhanced == rawDescription) {
-        enhanced = _createFallbackDescription(sceneLabel, confidence);
-      }
-
-      return enhanced;
-    } catch (e) {
-      print('Error en mejora con BERT: $e');
-      return _createFallbackDescription(sceneLabel, confidence);
-    }
-  }
-
   String _createFallbackDescription(String sceneLabel, double confidence) {
     // Clean label
     String cleanLabel = sceneLabel.replaceAll('_', ' ');
 
     // Create contextual description for detected objects
     Map<String, String> descriptions = {
-      'person': 'Hay una persona presente',
-      'car': 'Hay un automóvil',
-      'chair': 'Hay una silla',
-      'sofa': 'Hay un sofá',
-      'dining_table': 'Hay una mesa de comedor',
-      'tv_monitor': 'Hay un televisor',
-      'bottle': 'Hay una botella',
-      'potted_plant': 'Hay una planta',
-      'dog': 'Hay un perro',
-      'cat': 'Hay un gato',
-      'bicycle': 'Hay una bicicleta',
-      'bus': 'Hay un autobús',
-      'train': 'Hay un tren',
+      'person': 'una persona',
+      'car': 'un automóvil',
+      'chair': 'una silla',
+      'sofa': 'un sofá',
+      'dining_table': 'una mesa de comedor',
+      'tv_monitor': 'un televisor o monitor',
+      'bottle': 'una botella',
+      'potted_plant': 'una planta',
+      'dog': 'un perro',
+      'cat': 'un gato',
+      'bicycle': 'una bicicleta',
+      'bus': 'un autobús',
+      'train': 'un tren',
     };
 
     String baseDescription = descriptions[cleanLabel] ?? 'Detecto: $cleanLabel';
 
     // Add confidence qualifier
     if (confidence > 0.5) {
-      return '$baseDescription en la escena.';
+      return 'Hay ${descriptions[sceneLabel]} en frente.';
     } else if (confidence > 0.3) {
-      return 'Parece haber $cleanLabel en la escena.';
+      return 'Parece haber ${descriptions[sceneLabel]} frente a ti.';
     } else {
-      return 'Posiblemente hay $cleanLabel, pero no estoy seguro.';
+      return 'Posiblemente hay ${descriptions[sceneLabel]} en frente, pero no estoy muy segura.';
     }
   }
 
@@ -283,7 +257,6 @@ class SceneDetectionService {
 
   Future<void> dispose() async {
     _interpreter?.close();
-    await _bertService.dispose();
     _isInitialized = false;
   }
 }

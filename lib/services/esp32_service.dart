@@ -6,24 +6,24 @@ class ESP32Service {
 
   ESP32Service({this.baseUrl = 'http://192.168.4.1'});
 
-  // Método 1: Verificar conexión
+  // Verificar conexión
   Future<bool> testConnection() async {
     try {
       final response = await http
           .get(Uri.parse('$baseUrl/status'))
-          .timeout(Duration(seconds: 5));
+          .timeout(Duration(seconds: 15));
       return response.statusCode == 200;
     } catch (e) {
       return false;
     }
   }
 
-  // Método 2: Capturar imagen
+  // Capturar imagen
   Future<Uint8List?> captureImage() async {
     try {
       final response = await http
           .get(Uri.parse('$baseUrl/capture'))
-          .timeout(Duration(seconds: 10));
+          .timeout(Duration(seconds: 15));
 
       if (response.statusCode == 200) {
         return response.bodyBytes;

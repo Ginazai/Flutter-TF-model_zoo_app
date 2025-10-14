@@ -44,7 +44,7 @@ class CollisionProvider with ChangeNotifier {
           // Retroalimentación
           if (_lastResult!.hasCollision) {
             await _hapticService.vibrateCollisionAlert();
-            await _ttsService.speak('Cuidado, riesgo de colision del ${_lastResult!.minDistance.toStringAsFixed(1)}%'); //centí
+            await _ttsService.speak('Cuidado, riesgo de colision!'); //centí
           }
 
           notifyListeners();
