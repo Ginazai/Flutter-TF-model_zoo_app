@@ -139,30 +139,30 @@ class TextRecognitionScreen extends StatelessWidget {
                     minimumSize: Size(double.infinity, 56),
                   ),
                   onPressed: ocrProvider.isProcessing
-                      ? null
+                  ? null
                       : () async {
-                    try {
-                      final imageBytes =
-                      await connectionProvider.esp32Service
-                          .captureImage();
-                      if (imageBytes != null) {
-                        await ocrProvider.processImage(imageBytes);
-                      } else {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content:
-                            Text('No se pudo capturar la imagen'),
-                            backgroundColor: Colors.red,
-                          ),
-                        );
-                      }
-                    } catch (e) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('Error: $e'),
-                          backgroundColor: Colors.red,
+                    showDialog(
+                      context: context,
+                      barrierDismissible: false,
+                      builder: (context) => AlertDialog(
+                        title: Text('Analizando...'),
+                        content: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                          CircularProgressIndicator(),
+                          SizedBox(height: 16),
+                          Text('Esto puede tomar unos segundos'),
+                          ],
                         ),
-                      );
+                      ),
+                    );
+                    try {
+                      final imageBytes = await connectionProvider.esp32Service.captureImage();
+                      if (imageBytes != null) {
+                      await ocrProvider.processImage(imageBytes);
+                      }
+                    } finally {
+                      Navigator.pop(context); // Close dialog
                     }
                   },
                   child: Text(
