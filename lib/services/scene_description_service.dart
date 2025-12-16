@@ -229,6 +229,9 @@ class SceneDetectionService {
     String baseDescription = descriptions[cleanLabel] ?? 'Detecto: $cleanLabel';
 
     // Add confidence qualifier
+    if(confidence < 0.15) {
+      return "No puedo identificar nada en concreto.";
+    }
     if (confidence > 0.5) {
       return 'Hay ${descriptions[sceneLabel]} en frente.';
     } else if (confidence > 0.3) {

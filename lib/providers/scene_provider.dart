@@ -52,11 +52,12 @@ class SceneDetectionProvider with ChangeNotifier {
       _addToHistory(_lastResult!);
 
       // Leer descripción en voz alta
-      if (_lastResult!.isValid) {
-        await _ttsService.speak(_lastResult!.naturalDescription);
-      } else {
-        await _ttsService.speak('No pude identificar la escena claramente');
-      }
+      await _ttsService.speak(_lastResult!.naturalDescription);
+      // if (_lastResult!.isValid) {
+      //   await _ttsService.speak(_lastResult!.naturalDescription);
+      // } else {
+      //   await _ttsService.speak('No pude identificar la escena claramente');
+      // }
     } catch (e) {
       print('Error detectando escena: $e');
       await _ttsService.speak('Error al detectar la escena');
