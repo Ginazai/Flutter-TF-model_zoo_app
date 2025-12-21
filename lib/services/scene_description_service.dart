@@ -2,12 +2,12 @@ import 'dart:typed_data';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:image/image.dart' as img;
 import '../models/scene_description.dart';
+import '../utils/logger.dart';
 
 class SceneDetectionService {
   Interpreter? _interpreter;
   bool _isInitialized = false;
 
-  // MobileNet típicamente usa estas clases (Places365 o ImageNet)
   static const List<String> SCENE_LABELS = [
     'airport_terminal', 'art_gallery', 'auditorium', 'bakery', 'bar',
     'bathroom', 'bedroom', 'bookstore', 'bowling_alley', 'cafeteria',
@@ -19,7 +19,6 @@ class SceneDetectionService {
     'subway_station', 'supermarket', 'swimming_pool', 'warehouse', 'unknown'
   ];
 
-  // ImageNet normalization (standard for MobileNet)
   static const List<double> MEAN = [0.485, 0.456, 0.406];
   static const List<double> STD = [0.229, 0.224, 0.225];
 
@@ -27,29 +26,31 @@ class SceneDetectionService {
     if (_isInitialized) return;
 
     try {
-      // Initialize MobileNet
+      await Logger.log('SCENE: initialize - starting');
       _interpreter = await Interpreter.fromAsset(
         'assets/models/scene/DeepLabV3-Plus-MobileNet_float.tflite',
       );
 
       _isInitialized = true;
+      await Logger.log('SCENE: initialize - finished');
       print('MobileNet inicializado');
 
-      // Print model info
       print('Input shape: ${_interpreter!.getInputTensor(0).shape}');
       print('Output shape: ${_interpreter!.getOutputTensor(0).shape}');
     } catch (e) {
+      await Logger.log('SCENE: initialize - error: $e');
       print('Error inicializando SceneDetectionService: $e');
     }
   }
 
   Future<SceneDescription> detectScene(Uint8List imageBytes) async {
+    await Logger.log('SCENE: detectScene - starting');
     if (!_isInitialized) await initialize();
 
     try {
-      // 1. Decode and preprocess image
       img.Image? image = img.decodeImage(imageBytes);
       if (image == null) {
+        await Logger.log('SCENE: detectScene - failed to decode image');
         return SceneDescription(
           rawLabel: 'unknown',
           confidence: 0.0,
@@ -57,17 +58,16 @@ class SceneDetectionService {
         );
       }
 
-      // 2. Preprocess for DeepLabV3 (520x520)
       final inputShape = _interpreter!.getInputTensor(0).shape;
-      final inputSize = inputShape[1]; // 520
+      final inputSize = inputShape[1];
+      await Logger.log('SCENE: preprocessing - resizing to $inputSize');
 
       final resized = img.copyResize(image, width: inputSize, height: inputSize);
       var input = _preprocessImage(resized, inputSize);
 
-      // 3. Run inference - output is [1, 520, 520] with class IDs
+      await Logger.log('SCENE: running inference');
       final outputShape = _interpreter!.getOutputTensor(0).shape;
 
-      // DeepLabV3 outputs integer class IDs for each pixel
       var output = List.generate(
         outputShape[0],
             (_) => List.generate(
@@ -77,15 +77,17 @@ class SceneDetectionService {
       );
 
       _interpreter!.run(input, output);
+      await Logger.log('SCENE: finished inference');
 
-      // 4. Get dominant scene from segmentation map
       var result = _processSegmentationOutput(output);
 
-      // 5. Enhance with BERT to create natural description
       String naturalDescription = _createFallbackDescription(
         result['label'] as String,
         result['confidence'] as double,
       );
+
+      await Logger.log('SCENE: result - ${result['label']} with confidence ${(result['confidence'] as double).toStringAsFixed(3)}');
+      await Logger.log('SCENE: naturalDescription - $naturalDescription');
 
       return SceneDescription(
         rawLabel: result['label'] as String,
@@ -93,6 +95,7 @@ class SceneDetectionService {
         naturalDescription: naturalDescription,
       );
     } catch (e) {
+      await Logger.log('SCENE: detectScene - error: $e');
       print('Error en detección de escena: $e');
       return SceneDescription(
         rawLabel: 'unknown',
@@ -103,8 +106,6 @@ class SceneDetectionService {
   }
 
   List<List<List<List<double>>>> _preprocessImage(img.Image image, int size) {
-    // Qualcomm models typically use simple [0, 1] normalization
-    // Try this first (no mean/std normalization)
     return List.generate(1, (_) =>
         List.generate(size, (y) =>
             List.generate(size, (x) {
@@ -117,25 +118,10 @@ class SceneDetectionService {
             })
         )
     );
-
-    // If above doesn't work, try ImageNet normalization:
-    // return List.generate(1, (_) =>
-    //     List.generate(size, (y) =>
-    //         List.generate(size, (x) {
-    //           final pixel = image.getPixel(x, y);
-    //           return [
-    //             ((pixel.r / 255.0) - MEAN[0]) / STD[0],
-    //             ((pixel.g / 255.0) - MEAN[1]) / STD[1],
-    //             ((pixel.b / 255.0) - MEAN[2]) / STD[2],
-    //           ];
-    //         })
-    //     )
-    // );
   }
 
   Map<String, dynamic> _processSegmentationOutput(List<dynamic> output) {
     try {
-      // Count frequency of each class ID in the segmentation map
       Map<int, int> classFrequency = {};
       int totalPixels = 0;
 
@@ -147,21 +133,18 @@ class SceneDetectionService {
         }
       }
 
-      // Remove background (class 0) and find dominant class
       classFrequency.remove(0);
 
       if (classFrequency.isEmpty) {
         return {'label': 'unknown', 'confidence': 0.0};
       }
 
-      // Find most frequent class
       var dominantEntry = classFrequency.entries
           .reduce((a, b) => a.value > b.value ? a : b);
 
       int dominantClass = dominantEntry.key;
       double confidence = dominantEntry.value / totalPixels;
 
-      // Map class ID to label (DeepLabV3 uses PASCAL VOC or COCO classes)
       String label = _getClassLabel(dominantClass);
 
       print('Dominant class: $label (ID: $dominantClass, ${(confidence * 100).toStringAsFixed(1)}%)');
@@ -171,13 +154,12 @@ class SceneDetectionService {
         'confidence': confidence,
       };
     } catch (e) {
-      print('Error procesando segmentación: $e');
+      Logger.log('SCENE: _processSegmentationOutput - error: $e');
       return {'label': 'unknown', 'confidence': 0.0};
     }
   }
 
   String _getClassLabel(int classId) {
-    // DeepLabV3 with PASCAL VOC (21 classes)
     const Map<int, String> VOC_CLASSES = {
       0: 'background',
       1: 'aeroplane',
@@ -206,10 +188,8 @@ class SceneDetectionService {
   }
 
   String _createFallbackDescription(String sceneLabel, double confidence) {
-    // Clean label
     String cleanLabel = sceneLabel.replaceAll('_', ' ');
 
-    // Create contextual description for detected objects
     Map<String, String> descriptions = {
       'person': 'una persona',
       'car': 'un automóvil',
@@ -228,7 +208,6 @@ class SceneDetectionService {
 
     String baseDescription = descriptions[cleanLabel] ?? 'Detecto: $cleanLabel';
 
-    // Add confidence qualifier
     if(confidence < 0.15) {
       return "No puedo identificar nada en concreto.";
     }
@@ -241,14 +220,12 @@ class SceneDetectionService {
     }
   }
 
-  // Helper function for softmax
   double exp(double x) {
     const double e = 2.718281828459045;
     return pow(e, x).toDouble();
   }
 
   double pow(double base, double exponent) {
-    // Simple power function
     if (exponent == 0) return 1.0;
     double result = 1.0;
     int exp = exponent.abs().toInt();
@@ -261,5 +238,6 @@ class SceneDetectionService {
   Future<void> dispose() async {
     _interpreter?.close();
     _isInitialized = false;
+    await Logger.log('SCENE: dispose');
   }
 }
