@@ -81,7 +81,7 @@ class SceneDetectionService {
       // 4. Get dominant scene from segmentation map
       var result = _processSegmentationOutput(output);
 
-      // 5. Enhance with BERT to create natural description
+      // 5. Create Flutter TTS description
       String naturalDescription = _createFallbackDescription(
         result['label'] as String,
         result['confidence'] as double,
