@@ -22,7 +22,7 @@ class DepthEstimationService {
       _interpreter = await Interpreter.fromAsset(
         'assets/models/depth/Depth-Anything-V2_float.tflite',
       );
-
+      //
       _inputShape = _interpreter!.getInputTensor(0).shape;
       _outputShape = _interpreter!.getOutputTensor(0).shape;
 
