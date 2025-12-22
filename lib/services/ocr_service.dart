@@ -4,6 +4,7 @@ import 'package:flutter_tesseract_ocr/flutter_tesseract_ocr.dart';
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
+import '../utils/logger.dart';
 
 Future<String> _runOCR(Map<String, dynamic> params) async {
   String result = await FlutterTesseractOcr.extractText(
@@ -19,59 +20,53 @@ class OCRService {
 
   Future<bool> initialize() async {
     try {
+      await Logger.log('OCR: initialize - starting');
       print('Tesseract OCR ready');
       _isInitialized = true;
+      await Logger.log('OCR: initialize - finished');
       return true;
     } catch (e) {
-      print("Error initializing OCRService: $e");
+      await Logger.log('OCR: initialize - error: $e');
       return false;
     }
   }
 
   Future<String> recognizeText(Uint8List imageBytes) async {
+    await Logger.log('OCR: recognizeText - starting');
     if (!_isInitialized) {
       throw Exception('OCRService not initialized');
     }
 
     if (imageBytes.isEmpty || imageBytes.length > 10000000) {
-      print('ERROR: Image bytes are empty');
+      await Logger.log('OCR: recognizeText - invalid image bytes (${imageBytes.length})');
       return '';
     }
 
     String? tempImagePath;
 
     try {
-      print('Processing image: ${imageBytes.length} bytes');
+      await Logger.log('OCR: processing image - ${imageBytes.length} bytes');
 
       var image = img.decodeImage(imageBytes);
       if (image == null) {
-        print('ERROR: Failed to decode image');
+        await Logger.log('OCR: processing image - failed to decode');
         return '';
       }
 
-      print('Original size: ${image.width}x${image.height}');
+      await Logger.log('OCR: original size: ${image.width}x${image.height}');
 
-      // MINIMAL enhancement: just upscale
-      // image = img.copyResize(
-      //   image,
-      //   width: image.width * 2,
-      //   height: image.height * 2,
-      //   interpolation: img.Interpolation.cubic,
-      // );
       if (image.width > 2000 || image.height > 2000) {
         image = img.copyResize(image, width: 1500);
+        await Logger.log('OCR: resized to: ${image.width}x${image.height}');
+      } else {
+        await Logger.log('OCR: upscaled to: ${image.width}x${image.height}');
       }
-      print('Upscaled to: ${image.width}x${image.height}');
 
       final bytes = Uint8List.fromList(img.encodePng(image));
       tempImagePath = await _saveToTempFile(bytes);
+      await Logger.log('OCR: saved temp image at $tempImagePath');
 
-      // Try single OCR call with PSM 11 (sparse text)
-      // String result = await compute(_runOCR, {
-      //   'path': tempImagePath,
-      //   'language': 'spa+eng',
-      //   'args': {"psm": "11", "oem": "1"},
-      // });
+      await Logger.log('OCR: running tesseract (psm=11,oem=1)');
       String result = await FlutterTesseractOcr.extractText(
         tempImagePath,
         language: 'spa+eng',
@@ -84,19 +79,22 @@ class OCRService {
       result = result.trim();
 
       if (result.isEmpty) {
+        await Logger.log('OCR: finished - no text found (confidence: unknown)');
         print('No text found');
       } else {
+        await Logger.log('OCR: finished - result: "$result" (confidence: unknown)');
         print('Found: $result');
       }
 
       return result;
     } catch (e) {
-      print("Error: $e");
+      await Logger.log('OCR: error: $e');
       return '';
     } finally {
       if (tempImagePath != null) {
         try {
           await File(tempImagePath).delete();
+          await Logger.log('OCR: cleaned temp file $tempImagePath');
         } catch (_) {}
       }
     }
@@ -111,5 +109,6 @@ class OCRService {
 
   Future<void> dispose() async {
     _isInitialized = false;
+    await Logger.log('OCR: dispose');
   }
 }
