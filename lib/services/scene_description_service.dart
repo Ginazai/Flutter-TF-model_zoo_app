@@ -43,8 +43,12 @@ class SceneDetectionService {
     }
   }
 
-  Future<SceneDescription> detectScene(Uint8List imageBytes) async {
+  Future<SceneDescription> detectScene(Uint8List imageBytes, {String? groundTruth}) async {
     await Logger.log('SCENE: detectScene - starting');
+    if (groundTruth != null) {
+      await Logger.log('SCENE: Ground Truth = $groundTruth');
+    }
+
     if (!_isInitialized) await initialize();
 
     try {
@@ -79,7 +83,7 @@ class SceneDetectionService {
       _interpreter!.run(input, output);
       await Logger.log('SCENE: finished inference');
 
-      var result = _processSegmentationOutput(output);
+      var result = await _processSegmentationOutput(output, groundTruth);
 
       String naturalDescription = _createFallbackDescription(
         result['label'] as String,
@@ -88,6 +92,22 @@ class SceneDetectionService {
 
       await Logger.log('SCENE: result - ${result['label']} with confidence ${(result['confidence'] as double).toStringAsFixed(3)}');
       await Logger.log('SCENE: naturalDescription - $naturalDescription');
+
+      // Log métricas de precisión si hay ground truth
+      if (groundTruth != null) {
+        String predictedLabel = result['label'] as String;
+        double confidence = result['confidence'] as double;
+        bool isCorrect = predictedLabel == groundTruth;
+
+        await Logger.log('SCENE: METRICS - Predicted: $predictedLabel | Ground Truth: $groundTruth | Match: $isCorrect | Confidence: ${confidence.toStringAsFixed(3)}');
+
+        if (isCorrect) {
+          await Logger.log('SCENE: METRICS - TRUE POSITIVE for class $groundTruth');
+        } else {
+          await Logger.log('SCENE: METRICS - FALSE POSITIVE for predicted class $predictedLabel');
+          await Logger.log('SCENE: METRICS - FALSE NEGATIVE for actual class $groundTruth');
+        }
+      }
 
       return SceneDescription(
         rawLabel: result['label'] as String,
@@ -120,7 +140,7 @@ class SceneDetectionService {
     );
   }
 
-  Map<String, dynamic> _processSegmentationOutput(List<dynamic> output) {
+  Future<Map<String, dynamic>> _processSegmentationOutput(List<dynamic> output, String? groundTruth) async {
     try {
       Map<int, int> classFrequency = {};
       int totalPixels = 0;
@@ -136,17 +156,30 @@ class SceneDetectionService {
       classFrequency.remove(0);
 
       if (classFrequency.isEmpty) {
+        await Logger.log('SCENE: classFrequency - error: no known object/class was found');
         return {'label': 'unknown', 'confidence': 0.0};
       }
 
-      var dominantEntry = classFrequency.entries
-          .reduce((a, b) => a.value > b.value ? a : b);
+      // Log TODAS las clases detectadas con sus confidencias
+      await Logger.log('SCENE: ALL PREDICTIONS START');
+      var sortedEntries = classFrequency.entries.toList()
+        ..sort((a, b) => b.value.compareTo(a.value));
 
+      for (var entry in sortedEntries) {
+        int classId = entry.key;
+        double confidence = entry.value / totalPixels;
+        String label = _getClassLabel(classId);
+
+        await Logger.log('SCENE: PREDICTION - Class: $label (ID: $classId) | Confidence: ${(confidence * 100).toStringAsFixed(2)}% | Pixels: ${entry.value}/$totalPixels');
+      }
+      await Logger.log('SCENE: ALL PREDICTIONS END');
+
+      var dominantEntry = sortedEntries.first;
       int dominantClass = dominantEntry.key;
       double confidence = dominantEntry.value / totalPixels;
-
       String label = _getClassLabel(dominantClass);
 
+      await Logger.log('SCENE: DOMINANT CLASS - $label (ID: $dominantClass, ${(confidence * 100).toStringAsFixed(1)}%)');
       print('Dominant class: $label (ID: $dominantClass, ${(confidence * 100).toStringAsFixed(1)}%)');
 
       return {
@@ -154,7 +187,7 @@ class SceneDetectionService {
         'confidence': confidence,
       };
     } catch (e) {
-      Logger.log('SCENE: _processSegmentationOutput - error: $e');
+      await Logger.log('SCENE: _processSegmentationOutput - error: $e');
       return {'label': 'unknown', 'confidence': 0.0};
     }
   }

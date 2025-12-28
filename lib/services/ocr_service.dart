@@ -31,8 +31,12 @@ class OCRService {
     }
   }
 
-  Future<String> recognizeText(Uint8List imageBytes) async {
+  Future<String> recognizeText(Uint8List imageBytes, {String? groundTruth}) async {
     await Logger.log('OCR: recognizeText - starting');
+    if (groundTruth != null) {
+      await Logger.log('OCR: Ground Truth = "$groundTruth"');
+    }
+
     if (!_isInitialized) {
       throw Exception('OCRService not initialized');
     }
@@ -79,11 +83,16 @@ class OCRService {
       result = result.trim();
 
       if (result.isEmpty) {
-        await Logger.log('OCR: finished - no text found (confidence: unknown)');
+        await Logger.log('OCR: finished - no text found');
         print('No text found');
       } else {
-        await Logger.log('OCR: finished - result: "$result" (confidence: unknown)');
+        await Logger.log('OCR: finished - result: "$result"');
         print('Found: $result');
+      }
+
+      // Calcular métricas de precisión si hay ground truth
+      if (groundTruth != null) {
+        await _logOCRMetrics(result, groundTruth);
       }
 
       return result;
@@ -98,6 +107,98 @@ class OCRService {
         } catch (_) {}
       }
     }
+  }
+
+  Future<void> _logOCRMetrics(String predicted, String groundTruth) async {
+    // Normalizar textos para comparación
+    String normalizedPredicted = predicted.toLowerCase().trim();
+    String normalizedGroundTruth = groundTruth.toLowerCase().trim();
+
+    // Exactitud (exact match)
+    bool exactMatch = normalizedPredicted == normalizedGroundTruth;
+    await Logger.log('OCR: METRICS - Exact Match: $exactMatch');
+
+    // Character Error Rate (CER)
+    int cer = _levenshteinDistance(normalizedPredicted, normalizedGroundTruth);
+    double cerRate = groundTruth.isEmpty ? 0.0 : cer / groundTruth.length;
+    await Logger.log('OCR: METRICS - Character Error Rate (CER): ${(cerRate * 100).toStringAsFixed(2)}% | Edit Distance: $cer');
+
+    // Word Error Rate (WER)
+    List<String> predictedWords = normalizedPredicted.split(RegExp(r'\s+'));
+    List<String> groundTruthWords = normalizedGroundTruth.split(RegExp(r'\s+'));
+    int wer = _levenshteinDistance(
+      predictedWords.join(' '),
+      groundTruthWords.join(' '),
+    );
+    double werRate = groundTruthWords.isEmpty ? 0.0 : wer / groundTruthWords.length;
+    await Logger.log('OCR: METRICS - Word Error Rate (WER): ${(werRate * 100).toStringAsFixed(2)}%');
+
+    // Precisión a nivel de caracter
+    int correctChars = 0;
+    int totalChars = groundTruth.length;
+    for (int i = 0; i < normalizedPredicted.length && i < normalizedGroundTruth.length; i++) {
+      if (normalizedPredicted[i] == normalizedGroundTruth[i]) {
+        correctChars++;
+      }
+    }
+    double charAccuracy = totalChars == 0 ? 0.0 : correctChars / totalChars;
+    await Logger.log('OCR: METRICS - Character Accuracy: ${(charAccuracy * 100).toStringAsFixed(2)}% | Correct: $correctChars/$totalChars');
+
+    // Similitud (basada en palabras coincidentes)
+    Set<String> predictedSet = predictedWords.toSet();
+    Set<String> groundTruthSet = groundTruthWords.toSet();
+    int commonWords = predictedSet.intersection(groundTruthSet).length;
+    double wordSimilarity = groundTruthWords.isEmpty ? 0.0 : commonWords / groundTruthWords.length;
+    await Logger.log('OCR: METRICS - Word Similarity: ${(wordSimilarity * 100).toStringAsFixed(2)}% | Common Words: $commonWords/${groundTruthWords.length}');
+
+    // Longitud
+    await Logger.log('OCR: METRICS - Length - Predicted: ${predicted.length} | Ground Truth: ${groundTruth.length} | Diff: ${(predicted.length - groundTruth.length).abs()}');
+
+    // Resumen de precisión
+    double overallAccuracy = (charAccuracy + wordSimilarity) / 2;
+    await Logger.log('OCR: METRICS - Overall Accuracy Score: ${(overallAccuracy * 100).toStringAsFixed(2)}%');
+
+    if (exactMatch) {
+      await Logger.log('OCR: METRICS - PERFECT MATCH ✓');
+    } else if (overallAccuracy > 0.8) {
+      await Logger.log('OCR: METRICS - HIGH ACCURACY ✓');
+    } else if (overallAccuracy > 0.5) {
+      await Logger.log('OCR: METRICS - MODERATE ACCURACY ~');
+    } else {
+      await Logger.log('OCR: METRICS - LOW ACCURACY ✗');
+    }
+  }
+
+  // Algoritmo de Levenshtein para calcular distancia de edición
+  int _levenshteinDistance(String s1, String s2) {
+    if (s1 == s2) return 0;
+    if (s1.isEmpty) return s2.length;
+    if (s2.isEmpty) return s1.length;
+
+    List<List<int>> matrix = List.generate(
+      s1.length + 1,
+          (i) => List.filled(s2.length + 1, 0),
+    );
+
+    for (int i = 0; i <= s1.length; i++) {
+      matrix[i][0] = i;
+    }
+    for (int j = 0; j <= s2.length; j++) {
+      matrix[0][j] = j;
+    }
+
+    for (int i = 1; i <= s1.length; i++) {
+      for (int j = 1; j <= s2.length; j++) {
+        int cost = s1[i - 1] == s2[j - 1] ? 0 : 1;
+        matrix[i][j] = [
+          matrix[i - 1][j] + 1, // deletion
+          matrix[i][j - 1] + 1, // insertion
+          matrix[i - 1][j - 1] + cost, // substitution
+        ].reduce((a, b) => a < b ? a : b);
+      }
+    }
+
+    return matrix[s1.length][s2.length];
   }
 
   Future<String> _saveToTempFile(Uint8List bytes) async {

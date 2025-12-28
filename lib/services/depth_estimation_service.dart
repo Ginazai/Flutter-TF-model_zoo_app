@@ -9,6 +9,8 @@ class DepthEstimationService {
   bool _isInitialized = false;
   List<int> _inputShape = [];
   List<int> _outputShape = [];
+  bool _inferenceRunning = false;
+  double _calibrationFactor = 2.0;
 
   static const List<double> MEAN = [0.485, 0.456, 0.406];
   static const List<double> STD = [0.229, 0.224, 0.225];
@@ -17,17 +19,20 @@ class DepthEstimationService {
     if (_isInitialized) return;
 
     try {
-      _interpreter = await Interpreter.fromAsset(
-        'assets/models/depth/Depth-Anything-V2_float.tflite',
-      );
-
+      _interpreter = await Interpreter.fromAsset('assets/models/depth/Depth-Anything-V2_float.tflite');
       _inputShape = _interpreter!.getInputTensor(0).shape;
       _outputShape = _interpreter!.getOutputTensor(0).shape;
-
       _isInitialized = true;
       await Logger.log('Depth model initialized. inputShape=$_inputShape outputShape=$_outputShape');
     } catch (e) {
       await Logger.log('Error initializing depth model: $e');
+    }
+  }
+
+  void calibrate(double realCm, double measuredPredictedCm) {
+    if (measuredPredictedCm > 0) {
+      _calibrationFactor = realCm / measuredPredictedCm;
+      Logger.log('Depth calibration set. factor=$_calibrationFactor (real=$realCm measured=$measuredPredictedCm)');
     }
   }
 
@@ -38,118 +43,172 @@ class DepthEstimationService {
       return DepthResult(hasCollision: false, minDistance: 999);
     }
 
-    img.Image? image = img.decodeImage(imageBytes);
-    if (image == null || imageBytes.length > 10000000) {
-      await Logger.log('Invalid image or image too large. length=${imageBytes.length}');
+    if (_inferenceRunning) {
+      await Logger.log('Skipping estimateDepth because another inference is running.');
       return DepthResult(hasCollision: false, minDistance: 999);
     }
 
-    // Get dimensions from model shape
-    int height = _inputShape[1];
-    int width = _inputShape[2];
-
-    // Limit max size to prevent crashes
-    if (height > 518 || width > 518) {
-      await Logger.log('Model input too large (height=$height width=$width). Capping to 256x256.');
-      height = 256;
-      width = 256;
-    }
-
-    // Resize image to model input size
-    final resized = img.copyResize(image, width: width, height: height);
-
-    // Preprocess to Float32List
-    final inputBuffer = _preprocessToBuffer(resized, height, width);
-
-    // Calculate output size
-    int outputSize = _outputShape.reduce((a, b) => a * b);
-    final outputBuffer = Float32List(outputSize);
-
-    await Logger.log('Running inference. input (${height}x${width}), expected output size: $outputSize');
-
-    // Run inference with typed buffers
+    _inferenceRunning = true;
     try {
-      _interpreter?.run(
-          inputBuffer.buffer.asUint8List(),
-          outputBuffer.buffer.asUint8List()
+      img.Image? image = img.decodeImage(imageBytes);
+      if (image == null || imageBytes.length > 10000000) {
+        await Logger.log('Invalid image or image too large. length=${imageBytes.length}');
+        return DepthResult(hasCollision: false, minDistance: 999);
+      }
+
+      int height = _inputShape.length > 1 ? _inputShape[1] : 256;
+      int width = _inputShape.length > 2 ? _inputShape[2] : 256;
+
+      if (height > 518 || width > 518) {
+        await Logger.log('Model input too large (height=$height width=$width). Capping to 256x256.');
+        height = 256;
+        width = 256;
+      }
+
+      final resized = img.copyResize(image, width: width, height: height);
+
+      // Create properly shaped input buffer: [1, height, width, 3]
+      final inputBuffer = _preprocessToShapedBuffer(resized, height, width);
+
+      int outputSize = _outputShape.reduce((a, b) => a * b);
+
+      // Create properly shaped output buffer
+      final outputBuffer = _createOutputBuffer();
+
+      await Logger.log('Running inference. input (${height}x${width}), expected output size: $outputSize');
+
+      try {
+        _interpreter?.run(inputBuffer, outputBuffer);
+      } catch (e) {
+        await Logger.log('Inference error: $e');
+        return DepthResult(hasCollision: false, minDistance: 999);
+      }
+
+      int outH = _outputShape.length > 1 ? _outputShape[1] : height;
+      int outW = _outputShape.length > 2 ? _outputShape[2] : width;
+
+      // Extract output from shaped buffer
+      List<List<double>> depth2D = await _extractDepthMapFromShaped(outputBuffer, outH, outW);
+      if (depth2D.isEmpty) {
+        await Logger.log('Depth map extraction returned empty result. Returning default DepthResult.');
+        return DepthResult(hasCollision: false, minDistance: 999);
+      }
+
+      var stats = _analyzeDepth(depth2D);
+      double globalMin = stats['globalMin']!;
+      double globalMax = stats['globalMax']!;
+      double minValue = stats['minValue']!;
+
+      double normalizedDepth = 0.0;
+      if (globalMax != globalMin) {
+        normalizedDepth = (minValue - globalMin) / (globalMax - globalMin);
+      }
+
+      double distance = 1.0 - normalizedDepth;
+      double minDistanceCm = distance * 100.0 * _calibrationFactor;
+
+      await Logger.log('Depth estimation done. distance=$distance minDistance=$minDistanceCm globalMin=$globalMin globalMax=$globalMax');
+
+      return DepthResult(
+        hasCollision: distance < 0.6,
+        minDistance: minDistanceCm,
+        depthMap: depth2D,
       );
-    } catch (e) {
-      await Logger.log('Inference error: $e');
-      return DepthResult(hasCollision: false, minDistance: 999);
+    } finally {
+      _inferenceRunning = false;
     }
-
-    // Extract depth map from output buffer
-    int outH = _outputShape[1];
-    int outW = _outputShape[2];
-
-    List<List<double>> depth2D = _extractDepthMap(outputBuffer, outH, outW);
-
-    if (depth2D.isEmpty) {
-      await Logger.log('Depth map extraction returned empty result. Returning default DepthResult.');
-      return DepthResult(hasCollision: false, minDistance: 999);
-    }
-
-    // Analyze depth
-    var stats = _analyzeDepth(depth2D);
-    double globalMin = stats['globalMin']!;
-    double globalMax = stats['globalMax']!;
-    double minValue = stats['minValue']!;
-
-    double normalizedDepth = 0.0;
-    if (globalMax != globalMin) {
-      normalizedDepth = (minValue - globalMin) / (globalMax - globalMin);
-    }
-
-    double distance = 1.0 - normalizedDepth;
-
-    await Logger.log('Depth estimation done. distance=$distance minDistance=${distance * 100} globalMin=$globalMin globalMax=$globalMax');
-
-    return DepthResult(
-      hasCollision: distance < 0.6,
-      minDistance: distance * 100,
-      depthMap: depth2D,
-    );
   }
 
-  Float32List _preprocessToBuffer(img.Image image, int height, int width) {
-    final buffer = Float32List(height * width * 3);
-    int index = 0;
-
-    for (int y = 0; y < height; y++) {
-      for (int x = 0; x < width; x++) {
-        final pixel = image.getPixel(x, y);
-        buffer[index++] = ((pixel.r / 255.0) - MEAN[0]) / STD[0];
-        buffer[index++] = ((pixel.g / 255.0) - MEAN[1]) / STD[1];
-        buffer[index++] = ((pixel.b / 255.0) - MEAN[2]) / STD[2];
-      }
-    }
-
-    return buffer;
+  // Create shaped buffer [1, height, width, 3]
+  List<List<List<List<double>>>> _preprocessToShapedBuffer(img.Image image, int height, int width) {
+    List<List<List<List<double>>>> shaped = [
+      List.generate(height, (y) =>
+          List.generate(width, (x) {
+            var pixel = image.getPixel(x, y);
+            num r = pixel.r;
+            num g = pixel.g;
+            num b = pixel.b;
+            return [
+              ((r / 255.0) - MEAN[0]) / STD[0],
+              ((g / 255.0) - MEAN[1]) / STD[1],
+              ((b / 255.0) - MEAN[2]) / STD[2],
+            ];
+          })
+      )
+    ];
+    return shaped;
   }
 
-  List<List<double>> _extractDepthMap(Float32List output, int height, int width) {
+  // Create output buffer matching output shape
+  dynamic _createOutputBuffer() {
+    if (_outputShape.length == 4) {
+      // [batch, height, width, channels]
+      return List.generate(
+          _outputShape[0],
+              (_) => List.generate(
+              _outputShape[1],
+                  (_) => List.generate(
+                  _outputShape[2],
+                      (_) => List.filled(_outputShape[3], 0.0)
+              )
+          )
+      );
+    } else if (_outputShape.length == 3) {
+      // [batch, height, width]
+      return List.generate(
+          _outputShape[0],
+              (_) => List.generate(
+              _outputShape[1],
+                  (_) => List.filled(_outputShape[2], 0.0)
+          )
+      );
+    } else {
+      // Fallback to flat array
+      return Float32List(_outputShape.reduce((a, b) => a * b));
+    }
+  }
+
+  Future<List<List<double>>> _extractDepthMapFromShaped(dynamic output, int height, int width) async {
     List<List<double>> depth2D = [];
-
     try {
-      int expectedSize = height * width;
-      if (output.length < expectedSize) {
-        Logger.log('Output buffer too small: ${output.length} < $expectedSize');
-        return [];
-      }
-
-      for (int y = 0; y < height; y++) {
-        List<double> row = [];
-        for (int x = 0; x < width; x++) {
-          int index = y * width + x;
-          row.add(output[index]);
+      if (output is List) {
+        // Handle shaped output [batch, height, width] or [batch, height, width, channels]
+        var batch0 = output[0];
+        if (batch0 is List) {
+          for (int y = 0; y < height && y < batch0.length; y++) {
+            List<double> row = [];
+            var rowData = batch0[y];
+            if (rowData is List) {
+              for (int x = 0; x < width && x < rowData.length; x++) {
+                var val = rowData[x];
+                // If channels exist, take first channel
+                if (val is List && val.isNotEmpty) {
+                  row.add((val[0] as num).toDouble());
+                } else {
+                  row.add((val as num).toDouble());
+                }
+              }
+            }
+            depth2D.add(row);
+          }
         }
-        depth2D.add(row);
+      } else if (output is Float32List) {
+        // Fallback for flat output
+        for (int y = 0; y < height; y++) {
+          List<double> row = [];
+          for (int x = 0; x < width; x++) {
+            int index = y * width + x;
+            if (index < output.length) {
+              row.add(output[index]);
+            }
+          }
+          depth2D.add(row);
+        }
       }
     } catch (e) {
-      Logger.log('Error extracting depth map: $e');
+      await Logger.log('Error extracting depth map: $e');
       return [];
     }
-
     return depth2D;
   }
 
@@ -168,7 +227,6 @@ class DepthEstimationService {
       }
     }
 
-    // Analyze central region
     int y0 = (h * 0.3).floor();
     int y1 = (h * 0.7).floor();
     int x0 = (w * 0.3).floor();

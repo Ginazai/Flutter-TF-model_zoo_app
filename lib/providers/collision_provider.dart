@@ -9,58 +9,81 @@ import '../models/depth_result.dart';
 class CollisionProvider with ChangeNotifier {
   final DepthEstimationService _depthService = DepthEstimationService();
   final HapticService _hapticService = HapticService();
-  final TtsService _ttsService = TtsService();
+  final TtsService _tts_service = TtsService();
 
   bool _isMonitoring = false;
   DepthResult? _lastResult;
   Timer? _monitoringTimer;
+  bool _isRunningInference = false; // avoid overlapping runs
 
-  // GETTERS
   bool get isMonitoring => _isMonitoring;
   DepthResult? get lastResult => _lastResult;
   bool get hasCollisionRisk => _lastResult?.hasCollision ?? false;
 
-  // INICIALIZAR (llamar al crear el provider)
   Future<void> initialize() async {
     await _depthService.initialize();
   }
 
-  // INICIAR MONITOREO CONTINUO
   Future<void> startMonitoring(Function captureImageCallback) async {
     if (_isMonitoring) return;
 
     _isMonitoring = true;
     notifyListeners();
 
-    // Ejecutar cada 500ms
-    _monitoringTimer = Timer.periodic(Duration(milliseconds: 500), (timer) async {
+    // Reduce frequency and avoid overlapping inferences
+    _monitoringTimer = Timer.periodic(Duration(milliseconds: 800), (timer) async {
+      if (!_isMonitoring) return;
+      if (_isRunningInference) return; // skip if previous inference not finished
+      _isRunningInference = true;
       try {
-        // Obtener imagen del callback (viene del ESP32Service)
         Uint8List? imageBytes = await captureImageCallback();
-
         if (imageBytes != null) {
           _lastResult = await _depthService.estimateDepth(imageBytes);
-
-          // Retroalimentación
           if (_lastResult!.hasCollision) {
             await _hapticService.vibrateCollisionAlert();
-            await _ttsService.speak('Cuidado, riesgo de colision!'); //centí
+            await _tts_service.speak('Cuidado, riesgo de colision!');
           }
-
           notifyListeners();
         }
       } catch (e) {
-        print('Error en monitoreo: $e');
+        // keep short: use debugPrint so it doesn't block
+        debugPrint('Error en monitoreo: $e');
+      } finally {
+        _isRunningInference = false;
       }
     });
   }
 
-  // DETENER MONITOREO
+  // Single-shot capture method
+  Future<void> captureOnce(Function captureImageCallback) async {
+    if (_isRunningInference) {
+      debugPrint('Inference already running - skipping single capture.');
+      return;
+    }
+
+    _isRunningInference = true;
+    try {
+      Uint8List? imageBytes = await captureImageCallback();
+      if (imageBytes != null) {
+        _lastResult = await _depthService.estimateDepth(imageBytes);
+        if (_lastResult!.hasCollision) {
+          await _hapticService.vibrateCollisionAlert();
+          await _tts_service.speak('Cuidado, riesgo de colision!');
+        }
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('Error in single capture: $e');
+    } finally {
+      _isRunningInference = false;
+    }
+  }
+
   void stopMonitoring() {
     _monitoringTimer?.cancel();
     _isMonitoring = false;
     _hapticService.stopVibration();
-    _ttsService.stop();
+    _tts_service.stop();
     notifyListeners();
   }
 

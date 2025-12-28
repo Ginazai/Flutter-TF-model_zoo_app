@@ -11,7 +11,7 @@ class ESP32Service {
     await Logger.log('ESP32: testConnection - starting');
     try {
       final response = await http
-          .get(Uri.parse('$baseUrl/status'))
+          .get(Uri.parse('$baseUrl/mode/mobile'))
           .timeout(Duration(seconds: 15));
       final ok = response.statusCode == 200;
       await Logger.log('ESP32: testConnection - finished status=${response.statusCode}');

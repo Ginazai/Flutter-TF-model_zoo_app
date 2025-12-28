@@ -7,7 +7,15 @@ class Logger {
   // Initialize the logger (call this once when your app starts)
   static Future<void> init() async {
     try {
-      final directory = await getApplicationDocumentsDirectory();
+      Directory? dir;
+      if (Platform.isAndroid) {
+        dir = await getExternalStorageDirectory();
+      }
+
+      // Fallback to application documents directory (internal storage)
+      // if external storage is not available or not on Android
+      final directory = dir ?? await getApplicationDocumentsDirectory();
+
       _logFile = File('${directory.path}/logs.txt');
 
       // Create the file if it doesn't exist
