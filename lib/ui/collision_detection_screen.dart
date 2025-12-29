@@ -11,6 +11,44 @@ class CollisionDetectionScreen extends StatefulWidget {
 
 class _CollisionDetectionScreenState extends State<CollisionDetectionScreen> {
   Uint8List? _lastCapturedImage;
+  bool _isProcessing = false;
+
+  Future<void> _handleSingleCapture(
+      CollisionProvider collisionProvider,
+      ConnectionProvider connectionProvider,
+      ) async {
+    if (_isProcessing) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Ya hay un análisis en proceso, por favor espera...'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      _isProcessing = true;
+    });
+
+    try {
+      await collisionProvider.captureOnce(() async {
+        final bytes = await connectionProvider.esp32Service.captureImage();
+        if (bytes != null && mounted) {
+          setState(() {
+            _lastCapturedImage = bytes;
+          });
+        }
+        return bytes;
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+        });
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -85,6 +123,37 @@ class _CollisionDetectionScreenState extends State<CollisionDetectionScreen> {
                             ),
                           ),
                         ),
+                      // Processing overlay for single capture
+                      if (_isProcessing && !collisionProvider.isMonitoring)
+                        Container(
+                          color: Colors.black54,
+                          child: Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                CircularProgressIndicator(
+                                  color: Colors.white,
+                                ),
+                                SizedBox(height: 16),
+                                Text(
+                                  'Analizando profundidad...',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 16,
+                                  ),
+                                ),
+                                SizedBox(height: 8),
+                                Text(
+                                  'Esto puede tomar hasta 15 segundos',
+                                  style: TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
                     ],
                   ),
                 ),
@@ -108,9 +177,11 @@ class _CollisionDetectionScreenState extends State<CollisionDetectionScreen> {
                             : Colors.green,
                       ),
                       SizedBox(width: 8),
-                      Text(
-                        'Distancia: ${collisionProvider.lastResult!.minDistance.toStringAsFixed(2)} cm',
-                        style: TextStyle(fontSize: 16),
+                      Expanded(
+                        child: Text(
+                          'Distancia: ${collisionProvider.lastResult!.minDistance.toStringAsFixed(2)} cm',
+                          style: TextStyle(fontSize: 16),
+                        ),
                       ),
                     ],
                   ),
@@ -138,7 +209,9 @@ class _CollisionDetectionScreenState extends State<CollisionDetectionScreen> {
                           backgroundColor: Colors.red[700],
                           minimumSize: Size(double.infinity, 56),
                         ),
-                        onPressed: () async {
+                        onPressed: _isProcessing
+                            ? null
+                            : () async {
                           if (collisionProvider.isMonitoring) {
                             collisionProvider.stopMonitoring();
                           } else {
@@ -146,7 +219,7 @@ class _CollisionDetectionScreenState extends State<CollisionDetectionScreen> {
                               final bytes = await connectionProvider
                                   .esp32Service
                                   .captureImage();
-                              if (bytes != null) {
+                              if (bytes != null && mounted) {
                                 setState(() {
                                   _lastCapturedImage = bytes;
                                 });
@@ -168,21 +241,16 @@ class _CollisionDetectionScreenState extends State<CollisionDetectionScreen> {
                           backgroundColor: Colors.blueGrey,
                           minimumSize: Size(double.infinity, 56),
                         ),
-                        onPressed: () async {
-                          await collisionProvider.captureOnce(() async {
-                            final bytes = await connectionProvider
-                                .esp32Service
-                                .captureImage();
-                            if (bytes != null) {
-                              setState(() {
-                                _lastCapturedImage = bytes;
-                              });
-                            }
-                            return bytes;
-                          });
-                        },
+                        onPressed: (_isProcessing || collisionProvider.isMonitoring)
+                            ? null
+                            : () => _handleSingleCapture(
+                          collisionProvider,
+                          connectionProvider,
+                        ),
                         child: Text(
-                          'Capturar imagen (una vez)',
+                          _isProcessing
+                              ? 'Procesando...'
+                              : 'Capturar imagen (una vez)',
                           style: TextStyle(fontSize: 16, color: Colors.white),
                         ),
                       ),

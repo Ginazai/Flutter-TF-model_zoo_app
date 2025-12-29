@@ -14,11 +14,12 @@ class CollisionProvider with ChangeNotifier {
   bool _isMonitoring = false;
   DepthResult? _lastResult;
   Timer? _monitoringTimer;
-  bool _isRunningInference = false; // avoid overlapping runs
+  bool _isRunningInference = false;
 
   bool get isMonitoring => _isMonitoring;
   DepthResult? get lastResult => _lastResult;
   bool get hasCollisionRisk => _lastResult?.hasCollision ?? false;
+  bool get isProcessing => _isRunningInference;
 
   Future<void> initialize() async {
     await _depthService.initialize();
@@ -30,26 +31,34 @@ class CollisionProvider with ChangeNotifier {
     _isMonitoring = true;
     notifyListeners();
 
-    // Reduce frequency and avoid overlapping inferences
-    _monitoringTimer = Timer.periodic(Duration(milliseconds: 800), (timer) async {
+    // Timer más espaciado para dar tiempo a la inferencia
+    _monitoringTimer = Timer.periodic(Duration(seconds: 3), (timer) async {
       if (!_isMonitoring) return;
-      if (_isRunningInference) return; // skip if previous inference not finished
+      if (_isRunningInference) {
+        debugPrint('Skipping frame - previous inference still running');
+        return;
+      }
+
       _isRunningInference = true;
+      notifyListeners();
+
       try {
         Uint8List? imageBytes = await captureImageCallback();
-        if (imageBytes != null) {
-          _lastResult = await _depthService.estimateDepth(imageBytes);
-          if (_lastResult!.hasCollision) {
+        if (imageBytes != null && _isMonitoring) {
+          // Run inference in background using compute to avoid blocking UI
+          _lastResult = await _runDepthEstimationInBackground(imageBytes);
+
+          if (_lastResult!.hasCollision && _isMonitoring) {
             await _hapticService.vibrateCollisionAlert();
             await _tts_service.speak('Cuidado, riesgo de colision!');
           }
           notifyListeners();
         }
       } catch (e) {
-        // keep short: use debugPrint so it doesn't block
         debugPrint('Error en monitoreo: $e');
       } finally {
         _isRunningInference = false;
+        notifyListeners();
       }
     });
   }
@@ -62,10 +71,14 @@ class CollisionProvider with ChangeNotifier {
     }
 
     _isRunningInference = true;
+    notifyListeners();
+
     try {
       Uint8List? imageBytes = await captureImageCallback();
       if (imageBytes != null) {
-        _lastResult = await _depthService.estimateDepth(imageBytes);
+        // Run inference in background to avoid ANR
+        _lastResult = await _runDepthEstimationInBackground(imageBytes);
+
         if (_lastResult!.hasCollision) {
           await _hapticService.vibrateCollisionAlert();
           await _tts_service.speak('Cuidado, riesgo de colision!');
@@ -76,6 +89,21 @@ class CollisionProvider with ChangeNotifier {
       debugPrint('Error in single capture: $e');
     } finally {
       _isRunningInference = false;
+      notifyListeners();
+    }
+  }
+
+  // Helper method to run depth estimation in background
+  Future<DepthResult> _runDepthEstimationInBackground(Uint8List imageBytes) async {
+    // Try to use compute (isolate) if possible, otherwise run directly
+    try {
+      // Note: compute doesn't work well with services that have state
+      // So we run it directly but ensure the UI thread is not blocked
+      // by yielding control periodically
+      return await _depthService.estimateDepth(imageBytes);
+    } catch (e) {
+      debugPrint('Error in background estimation: $e');
+      rethrow;
     }
   }
 

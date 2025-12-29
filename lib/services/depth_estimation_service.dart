@@ -10,7 +10,7 @@ class DepthEstimationService {
   List<int> _inputShape = [];
   List<int> _outputShape = [];
   bool _inferenceRunning = false;
-  double _calibrationFactor = 2.0;
+  double _calibrationFactor = 2.3;
 
   static const List<double> MEAN = [0.485, 0.456, 0.406];
   static const List<double> STD = [0.229, 0.224, 0.225];
