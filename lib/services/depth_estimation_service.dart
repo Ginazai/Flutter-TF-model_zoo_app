@@ -10,16 +10,15 @@ class DepthEstimationService {
   List<int> _inputShape = [];
   List<int> _outputShape = [];
   bool _inferenceRunning = false;
-  double _calibrationFactor = 2.3;
+  double _calibrationFactor = 1.0;
 
   static const List<double> MEAN = [0.485, 0.456, 0.406];
   static const List<double> STD = [0.229, 0.224, 0.225];
 
   Future<void> initialize() async {
     if (_isInitialized) return;
-
     try {
-      _interpreter = await Interpreter.fromAsset('assets/models/depth/Depth-Anything-V2_float.tflite');
+      _interpreter = await Interpreter.fromAsset('assets/models/depth/depth_anything_metric_nhwc.tflite');
       _inputShape = _interpreter!.getInputTensor(0).shape;
       _outputShape = _interpreter!.getOutputTensor(0).shape;
       _isInitialized = true;
@@ -39,7 +38,7 @@ class DepthEstimationService {
   Future<DepthResult> estimateDepth(Uint8List imageBytes) async {
     if (!_isInitialized) await initialize();
     if (!_isInitialized) {
-      await Logger.log('Depth model not initialized after initialize() call. Returning default DepthResult.');
+      await Logger.log('Depth model not initialized. Returning default DepthResult.');
       return DepthResult(hasCollision: false, minDistance: 999);
     }
 
@@ -56,61 +55,66 @@ class DepthEstimationService {
         return DepthResult(hasCollision: false, minDistance: 999);
       }
 
-      int height = _inputShape.length > 1 ? _inputShape[1] : 256;
-      int width = _inputShape.length > 2 ? _inputShape[2] : 256;
+      // Determine input dimensions and format
+      int height = 384;
+      int width = 384;
+      bool inputIsNCHW = false;
 
-      if (height > 518 || width > 518) {
-        await Logger.log('Model input too large (height=$height width=$width). Capping to 256x256.');
-        height = 256;
-        width = 256;
+      if (_inputShape.length == 4) {
+        if (_inputShape[1] == 3) {
+          inputIsNCHW = true;
+          height = _inputShape[2];
+          width = _inputShape[3];
+        } else if (_inputShape[3] == 3) {
+          inputIsNCHW = false;
+          height = _inputShape[1];
+          width = _inputShape[2];
+        }
       }
 
+      await Logger.log('Resizing image to ${width}x${height} (${inputIsNCHW ? "NCHW" : "NHWC"})');
       final resized = img.copyResize(image, width: width, height: height);
 
-      // Create properly shaped input buffer: [1, height, width, 3]
-      final inputBuffer = _preprocessToShapedBuffer(resized, height, width);
+      // Create input as nested list structure (required by ai_edge_torch models)
+      final inputObject = _buildInputObjectNested(resized, height, width, inputIsNCHW);
 
-      int outputSize = _outputShape.reduce((a, b) => a * b);
+      // Create output buffer as nested list
+      final outputObject = _createNestedOutputList(_outputShape);
 
-      // Create properly shaped output buffer
-      final outputBuffer = _createOutputBuffer();
-
-      await Logger.log('Running inference. input (${height}x${width}), expected output size: $outputSize');
+      await Logger.log('Running inference. outputShape=$_outputShape');
 
       try {
-        _interpreter?.run(inputBuffer, outputBuffer);
+        _interpreter!.run(inputObject, outputObject);
       } catch (e) {
         await Logger.log('Inference error: $e');
         return DepthResult(hasCollision: false, minDistance: 999);
       }
 
-      int outH = _outputShape.length > 1 ? _outputShape[1] : height;
-      int outW = _outputShape.length > 2 ? _outputShape[2] : width;
-
-      // Extract output from shaped buffer
-      List<List<double>> depth2D = await _extractDepthMapFromShaped(outputBuffer, outH, outW);
+      // Extract depth map
+      List<List<double>> depth2D = _extractDepthMapFromOutputObject(outputObject, _outputShape);
       if (depth2D.isEmpty) {
-        await Logger.log('Depth map extraction returned empty result. Returning default DepthResult.');
+        await Logger.log('Depth map extraction returned empty result.');
         return DepthResult(hasCollision: false, minDistance: 999);
       }
 
+      // Analyze depth (Depth Anything V2 Metric outputs actual depth values in meters)
       var stats = _analyzeDepth(depth2D);
-      double globalMin = stats['globalMin']!;
-      double globalMax = stats['globalMax']!;
-      double minValue = stats['minValue']!;
+      double globalMin = stats['globalMin'] ?? 0.0;
+      double globalMax = stats['globalMax'] ?? 0.0;
+      double minValue = stats['minValue'] ?? 0.0;
 
-      double normalizedDepth = 0.0;
-      if (globalMax != globalMin) {
-        normalizedDepth = (minValue - globalMin) / (globalMax - globalMin);
-      }
+      // Depth Anything V2 Metric outputs depth in meters
+      // Lower values = closer objects (unlike inverse depth)
+      double minDistanceMeters = minValue * _calibrationFactor;
+      double minDistanceCm = minDistanceMeters * 100.0;
 
-      double distance = 1.0 - normalizedDepth;
-      double minDistanceCm = distance * 100.0 * _calibrationFactor;
+      await Logger.log('Depth estimation done. minDistance=${minDistanceCm.toStringAsFixed(1)} cm (${minDistanceMeters.toStringAsFixed(3)}m), globalMin=$globalMin globalMax=$globalMax');
 
-      await Logger.log('Depth estimation done. distance=$distance minDistance=$minDistanceCm globalMin=$globalMin globalMax=$globalMax');
+      // Collision detection: less than 60cm
+      bool hasCollision = minDistanceCm < 60.0;
 
       return DepthResult(
-        hasCollision: distance < 0.6,
+        hasCollision: hasCollision,
         minDistance: minDistanceCm,
         depthMap: depth2D,
       );
@@ -119,97 +123,121 @@ class DepthEstimationService {
     }
   }
 
-  // Create shaped buffer [1, height, width, 3]
-  List<List<List<List<double>>>> _preprocessToShapedBuffer(img.Image image, int height, int width) {
-    List<List<List<List<double>>>> shaped = [
-      List.generate(height, (y) =>
-          List.generate(width, (x) {
-            var pixel = image.getPixel(x, y);
-            num r = pixel.r;
-            num g = pixel.g;
-            num b = pixel.b;
-            return [
-              ((r / 255.0) - MEAN[0]) / STD[0],
-              ((g / 255.0) - MEAN[1]) / STD[1],
-              ((b / 255.0) - MEAN[2]) / STD[2],
-            ];
-          })
-      )
-    ];
-    return shaped;
-  }
+  // Build input as nested list structure (required for ai_edge_torch models)
+  dynamic _buildInputObjectNested(img.Image image, int height, int width, bool channelsFirst) {
+    if (channelsFirst) {
+      // NCHW format: [1, 3, H, W]
+      List<List<List<List<double>>>> input = [[]];
 
-  // Create output buffer matching output shape
-  dynamic _createOutputBuffer() {
-    if (_outputShape.length == 4) {
-      // [batch, height, width, channels]
-      return List.generate(
-          _outputShape[0],
-              (_) => List.generate(
-              _outputShape[1],
-                  (_) => List.generate(
-                  _outputShape[2],
-                      (_) => List.filled(_outputShape[3], 0.0)
-              )
-          )
-      );
-    } else if (_outputShape.length == 3) {
-      // [batch, height, width]
-      return List.generate(
-          _outputShape[0],
-              (_) => List.generate(
-              _outputShape[1],
-                  (_) => List.filled(_outputShape[2], 0.0)
-          )
-      );
+      for (int c = 0; c < 3; c++) {
+        List<List<double>> channel = [];
+        for (int y = 0; y < height; y++) {
+          List<double> row = [];
+          for (int x = 0; x < width; x++) {
+            var pixel = image.getPixel(x, y);
+            double val;
+            if (c == 0) {
+              val = (pixel.r / 255.0 - MEAN[0]) / STD[0];
+            } else if (c == 1) {
+              val = (pixel.g / 255.0 - MEAN[1]) / STD[1];
+            } else {
+              val = (pixel.b / 255.0 - MEAN[2]) / STD[2];
+            }
+            row.add(val);
+          }
+          channel.add(row);
+        }
+        input[0].add(channel);
+      }
+      return input;
     } else {
-      // Fallback to flat array
-      return Float32List(_outputShape.reduce((a, b) => a * b));
+      // NHWC format: [1, H, W, 3]
+      List<List<List<List<double>>>> input = [[]];
+
+      for (int y = 0; y < height; y++) {
+        List<List<double>> row = [];
+        for (int x = 0; x < width; x++) {
+          var pixel = image.getPixel(x, y);
+          List<double> pixelValues = [
+            (pixel.r / 255.0 - MEAN[0]) / STD[0],
+            (pixel.g / 255.0 - MEAN[1]) / STD[1],
+            (pixel.b / 255.0 - MEAN[2]) / STD[2],
+          ];
+          row.add(pixelValues);
+        }
+        input[0].add(row);
+      }
+      return input;
     }
   }
 
-  Future<List<List<double>>> _extractDepthMapFromShaped(dynamic output, int height, int width) async {
+  dynamic _createNestedOutputList(List<int> shape) {
+    if (shape.isEmpty) return 0.0;
+    dynamic build(int dimIndex) {
+      int len = shape[dimIndex];
+      if (dimIndex == shape.length - 1) {
+        return List<double>.filled(len, 0.0);
+      } else {
+        return List.generate(len, (_) => build(dimIndex + 1));
+      }
+    }
+    return build(0);
+  }
+
+  List<List<double>> _extractDepthMapFromOutputObject(dynamic outputObj, List<int> shape) {
     List<List<double>> depth2D = [];
     try {
-      if (output is List) {
-        // Handle shaped output [batch, height, width] or [batch, height, width, channels]
-        var batch0 = output[0];
-        if (batch0 is List) {
-          for (int y = 0; y < height && y < batch0.length; y++) {
+      if (shape.isEmpty) return depth2D;
+
+      if (shape.length == 3) {
+        // [1, H, W]
+        int outH = shape[1];
+        int outW = shape[2];
+        for (int y = 0; y < outH; y++) {
+          List<double> row = [];
+          for (int x = 0; x < outW; x++) {
+            double val = (outputObj[0][y][x] as num).toDouble();
+            row.add(val);
+          }
+          depth2D.add(row);
+        }
+      } else if (shape.length == 4) {
+        int a = shape[1];
+        int b = shape[2];
+        int c = shape[3];
+
+        if (a > 1 && b > 1) {
+          // [1, H, W, C]
+          int outH = a;
+          int outW = b;
+          for (int y = 0; y < outH; y++) {
             List<double> row = [];
-            var rowData = batch0[y];
-            if (rowData is List) {
-              for (int x = 0; x < width && x < rowData.length; x++) {
-                var val = rowData[x];
-                // If channels exist, take first channel
-                if (val is List && val.isNotEmpty) {
-                  row.add((val[0] as num).toDouble());
-                } else {
-                  row.add((val as num).toDouble());
-                }
-              }
+            for (int x = 0; x < outW; x++) {
+              double val = (outputObj[0][y][x][0] as num).toDouble();
+              row.add(val);
+            }
+            depth2D.add(row);
+          }
+        } else if (a == 1 && b > 1 && c > 1) {
+          // [1, 1, H, W]
+          int outH = b;
+          int outW = c;
+          for (int y = 0; y < outH; y++) {
+            List<double> row = [];
+            for (int x = 0; x < outW; x++) {
+              double val = (outputObj[0][0][y][x] as num).toDouble();
+              row.add(val);
             }
             depth2D.add(row);
           }
         }
-      } else if (output is Float32List) {
-        // Fallback for flat output
-        for (int y = 0; y < height; y++) {
-          List<double> row = [];
-          for (int x = 0; x < width; x++) {
-            int index = y * width + x;
-            if (index < output.length) {
-              row.add(output[index]);
-            }
-          }
-          depth2D.add(row);
-        }
       }
+
+      return depth2D;
     } catch (e) {
-      await Logger.log('Error extracting depth map: $e');
+      Logger.log('Error extracting depth map: $e');
       return [];
     }
-    return depth2D;
   }
 
   Map<String, double> _analyzeDepth(List<List<double>> depthMap) {
@@ -219,6 +247,7 @@ class DepthEstimationService {
     int h = depthMap.length;
     int w = depthMap.isNotEmpty ? depthMap[0].length : 0;
 
+    // Find global min/max
     for (int y = 0; y < h; y++) {
       for (int x = 0; x < w; x++) {
         double val = depthMap[y][x];
@@ -227,6 +256,7 @@ class DepthEstimationService {
       }
     }
 
+    // Analyze center region (30%-70% of image)
     int y0 = (h * 0.3).floor();
     int y1 = (h * 0.7).floor();
     int x0 = (w * 0.3).floor();
@@ -239,6 +269,7 @@ class DepthEstimationService {
       x1 = w;
     }
 
+    // Find MINIMUM in center region (Depth Anything Metric: lower = closer)
     double minValue = double.infinity;
     for (int y = y0; y < y1; y++) {
       for (int x = x0; x < x1; x++) {
