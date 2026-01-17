@@ -49,7 +49,7 @@ class OCRProvider with ChangeNotifier {
         // Create result with ML Kit confidence (default to high confidence if text found)
         _lastResult = OCRResult(
           rawText: rawText,
-          confidence: 0.9, // ML Kit doesn't expose element-level confidence directly
+          confidence: 0.9,
         );
 
         // Speak the recognized text
@@ -65,8 +65,15 @@ class OCRProvider with ChangeNotifier {
     }
   }
 
+  // NUEVO: Método para detener el TTS
+  Future<void> stopSpeaking() async {
+    await _ttsService.stop();
+  }
+
   @override
   void dispose() {
+    // Detener el TTS antes de destruir el provider
+    _ttsService.stop();
     _ocrService.dispose();
     super.dispose();
   }

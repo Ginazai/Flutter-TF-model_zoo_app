@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/connection_provider.dart';
+import '../providers/traffic_light_provider.dart';
+import '../providers/collision_provider.dart';
+import '../providers/scene_provider.dart';
+import '../providers/ocr_provider.dart';
 import 'collision_detection_screen.dart';
 import 'text_recognition_screen.dart';
 import 'environment_description_screen.dart';
@@ -26,7 +30,7 @@ class HomeScreen extends StatelessWidget {
                 bottom: 10.0
               ),
               child: Text(
-                'Asistente Visual',
+                'BindEdge: Asistente Visual',
                 style: TextStyle(
                     color: Colors.white
                 ),
@@ -64,7 +68,10 @@ class HomeScreen extends StatelessWidget {
                       onTap: () => Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (_) => TextRecognitionScreen(),
+                          builder: (_) => ChangeNotifierProvider(
+                              create: (_) => OCRProvider(),
+                              child: TextRecognitionScreen(),
+                          )
                         ),
                       ),
                     ),
@@ -78,7 +85,10 @@ class HomeScreen extends StatelessWidget {
                       onTap: () => Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (_) => CollisionDetectionScreen(),
+                          builder: (_) => ChangeNotifierProvider(
+                              create: (_) => CollisionProvider(),
+                              child: CollisionDetectionScreen(),
+                          )
                         ),
                       ),
                     ),
@@ -92,7 +102,10 @@ class HomeScreen extends StatelessWidget {
                       onTap: () => Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (_) => EnvironmentDescriptionScreen(),
+                          builder: (_) => ChangeNotifierProvider(
+                            create: (_) => SceneDetectionProvider(),
+                            child: EnvironmentDescriptionScreen(),
+                          ),
                         ),
                       ),
                     ),
@@ -106,7 +119,10 @@ class HomeScreen extends StatelessWidget {
                       onTap: () => Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (_) => TrafficLightDetectionScreen(),
+                          builder: (_) => ChangeNotifierProvider(
+                          create: (_) => TrafficLightProvider(),
+                          child: TrafficLightDetectionScreen(),
+                          )
                         ),
                       ),
                     ),

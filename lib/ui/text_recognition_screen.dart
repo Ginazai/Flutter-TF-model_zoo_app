@@ -11,6 +11,39 @@ class TextRecognitionScreen extends StatefulWidget {
 
 class _TextRecognitionScreenState extends State<TextRecognitionScreen> {
   Uint8List? _lastCapturedImage;
+  bool _isInitializing = true;
+
+  OCRProvider? _ocrProvider;
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeOCR();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Guardar referencia al provider de forma segura
+    _ocrProvider = Provider.of<OCRProvider>(context, listen: false);
+  }
+
+  @override
+  void dispose() {
+    // Usar la referencia guardada en lugar de buscar el provider
+    _ocrProvider?.stopSpeaking();
+    super.dispose();
+  }
+
+  Future<void> _initializeOCR() async {
+    final ocrProvider = Provider.of<OCRProvider>(context, listen: false);
+    await ocrProvider.initialize();
+    if (mounted) {
+      setState(() {
+        _isInitializing = false;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -22,7 +55,18 @@ class _TextRecognitionScreenState extends State<TextRecognitionScreen> {
             title: Text('Reconocimiento de Texto'),
             backgroundColor: Colors.purple,
           ),
-          body: Column(
+          body: _isInitializing
+              ? Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text('Inicializando OCR...'),
+              ],
+            ),
+          )
+              : Column(
             children: [
               // Camera preview with image
               Container(
@@ -214,7 +258,9 @@ class _TextRecognitionScreenState extends State<TextRecognitionScreen> {
                           await ocrProvider.processImage(imageBytes);
                         }
                       } finally {
-                        Navigator.pop(context);
+                        if (mounted) {
+                          Navigator.pop(context);
+                        }
                       }
                     },
                     child: Text(
