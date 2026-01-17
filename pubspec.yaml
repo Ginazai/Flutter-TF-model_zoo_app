@@ -75,6 +75,7 @@ flutter:
   assets:
     - assets/models/depth/
     - assets/models/scene/
+    - assets/models/traffic_light/
     - assets/tessdata_config.json
     - assets/tessdata/
   # The following line ensures that the Material Icons font is

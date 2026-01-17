@@ -4,6 +4,7 @@ import 'providers/connection_provider.dart';
 import 'providers/collision_provider.dart';
 import 'providers/ocr_provider.dart';
 import 'providers/scene_provider.dart';
+import 'providers/traffic_light_provider.dart';
 import 'ui/home_screen.dart';
 
 void main() {
@@ -20,6 +21,7 @@ class MyApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => CollisionProvider()..initialize()),
         ChangeNotifierProvider(create: (_) => OCRProvider()..initialize()),
         ChangeNotifierProvider(create: (_) => SceneDetectionProvider()..initialize()),
+        ChangeNotifierProvider(create: (_) => TrafficLightProvider()..initialize()),
       ],
       child: MaterialApp(
         title: 'Asistente Visual',

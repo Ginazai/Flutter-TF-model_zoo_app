@@ -4,6 +4,7 @@ import '../providers/connection_provider.dart';
 import 'collision_detection_screen.dart';
 import 'text_recognition_screen.dart';
 import 'environment_description_screen.dart';
+import 'traffic_light_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -92,6 +93,20 @@ class HomeScreen extends StatelessWidget {
                         context,
                         MaterialPageRoute(
                           builder: (_) => EnvironmentDescriptionScreen(),
+                        ),
+                      ),
+                    ),
+                    SizedBox(height: 16),
+                    _buildFeatureCard(
+                      context,
+                      title: 'Detección de Semáforos',
+                      icon: Icons.traffic,
+                      color: Colors.orange,
+                      enabled: connectionProvider.isConnected,
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => TrafficLightDetectionScreen(),
                         ),
                       ),
                     ),
